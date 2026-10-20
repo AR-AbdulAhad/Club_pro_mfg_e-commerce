@@ -38,32 +38,59 @@ const CheckoutPage = () => {
     phone: '',
   });
 
+  /* ── Live Shipping Rate state ────────────────────────────── */
+  const [shippingCost, setShippingCost] = useState(0);
+  const [shippingServiceName, setShippingServiceName] = useState('');
+  const [shippingLoading, setShippingLoading] = useState(false);
+
   // Keep a stable ref to shippingAddress so submitDimeCharge doesn't change on every keystroke
   const shippingAddressRef = useRef(shippingAddress);
   useEffect(() => {
     shippingAddressRef.current = shippingAddress;
   }, [shippingAddress]);
 
-  // Prefill shipping address from logged in user if present in localStorage
+  // Prefill shipping address from logged in user profile / localStorage
   useEffect(() => {
-    try {
-      const userRaw = localStorage.getItem('user');
-      if (userRaw) {
-        const u = JSON.parse(userRaw);
+    const loadProfile = async () => {
+      let userData = null;
+      try {
+        const token = getAuthToken();
+        if (token) {
+          const res = await fetch(`${BASE_API}/profile`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (res.ok) {
+            userData = await res.json();
+          }
+        }
+      } catch (e) {
+        console.error('Failed to fetch profile:', e);
+      }
+
+      if (!userData) {
+        try {
+          const userRaw = localStorage.getItem('user');
+          if (userRaw) userData = JSON.parse(userRaw);
+        } catch (e) {
+          console.error('Failed to parse user from localStorage:', e);
+        }
+      }
+
+      if (userData) {
         setShippingAddress((prev) => ({
           ...prev,
-          fullName: u.fullName || u.name || prev.fullName,
-          address1: u.commercialStreet || u.billingStreet || prev.address1,
-          city:     u.commercialCity || u.billingCity || prev.city,
-          state:    u.commercialState || u.billingState || prev.state,
-          zip:      u.commercialZip || u.billingZip || prev.zip,
-          country:  u.commercialCountry || u.billingCountry || 'US',
-          phone:    u.phone || prev.phone,
+          fullName: userData.fullName || userData.name || prev.fullName || '',
+          address1: userData.billingStreet || userData.commercialStreet || prev.address1 || '',
+          city:     userData.billingCity || userData.commercialCity || prev.city || '',
+          state:    userData.billingState || userData.commercialState || prev.state || '',
+          zip:      userData.billingZip || userData.commercialZip || prev.zip || '',
+          country:  userData.billingCountry || userData.commercialCountry || prev.country || 'US',
+          phone:    userData.phone || prev.phone || '',
         }));
       }
-    } catch (e) {
-      console.error('Failed to parse user from localStorage', e);
-    }
+    };
+
+    loadProfile();
   }, []);
 
   /* ── MutationObserver: remove iframe borders the instant CollectJS injects them ── */
@@ -71,7 +98,7 @@ const CheckoutPage = () => {
     if (!collectJsReady) return;
 
     const FIELD_IDS = ['collect-ccnumber', 'collect-ccexp', 'collect-cvv'];
-    const FIELD_HEIGHT = '46px';
+    const FIELD_HEIGHT = '38px';
 
     const applyStyle = (iframe) => {
       iframe.style.setProperty('border',     'none', 'important');
@@ -122,7 +149,52 @@ const CheckoutPage = () => {
     0
   );
 
+  const finalTotal = subtotal + (shippingCost || 0);
+
   const getAuthToken = () => localStorage.getItem('token');
+
+  /* ── Live Shipping Rate Auto-Fetch on Address/Zip change ─── */
+  useEffect(() => {
+    if (!shippingAddress.zip || shippingAddress.zip.trim().length < 5 || cartItems.length === 0) {
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      setShippingLoading(true);
+      try {
+        const res = await fetch(`${BASE_API}/shipping/calculate-rate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            items: cartItems.map((item) => ({
+              id: item.id,
+              qty: Number(item.quantity || 1),
+              price: getPriceAsNumber(item.price),
+            })),
+            shippingAddress: {
+              zip: shippingAddress.zip.trim(),
+              state: shippingAddress.state?.trim(),
+              city: shippingAddress.city?.trim(),
+              address1: shippingAddress.address1?.trim(),
+              country: (shippingAddress.country || 'US').trim(),
+            },
+          }),
+        });
+
+        const data = await res.json();
+        if (data.success) {
+          setShippingCost(Number(data.shippingCost || 0));
+          setShippingServiceName(data.serviceName || 'Standard Shipping');
+        }
+      } catch (err) {
+        console.warn('Failed to calculate live shipping rate:', err);
+      } finally {
+        setShippingLoading(false);
+      }
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [shippingAddress.zip, shippingAddress.state, shippingAddress.country, cartItems]);
 
   /* ── 1. Fetch gateway config ─────────────────────────────── */
   useEffect(() => {
@@ -156,7 +228,7 @@ const CheckoutPage = () => {
     try {
       const payload = {
         payment_token: paymentToken,
-        amount: subtotal.toFixed(2),
+        amount: finalTotal.toFixed(2),
         items: cartItems.map((item) => ({
           id:    item.id,
           name:  item.name,
@@ -172,6 +244,8 @@ const CheckoutPage = () => {
           zip:      currentShipping.zip,
           country:  currentShipping.country || 'US',
           phone:    currentShipping.phone,
+          shippingCost: (shippingCost || 0).toFixed(2),
+          shippingServiceName: shippingServiceName || 'Standard Shipping',
         },
         billingAddress: {
           firstName: currentShipping.fullName?.trim().split(/\s+/)[0] || '',
@@ -305,15 +379,15 @@ const CheckoutPage = () => {
           }
         },
         fields: {
-          ccnumber: { selector: '#collect-ccnumber', placeholder: '1234 5678 9012 3456' },
+          ccnumber: { selector: '#collect-ccnumber', placeholder: '•••• •••• •••• ••••' },
           ccexp:    { selector: '#collect-ccexp',    placeholder: 'MM / YY' },
-          cvv:      { selector: '#collect-cvv',      placeholder: '•••' },
+          cvv:      { selector: '#collect-cvv',      placeholder: 'CVC' },
         },
         customCss: {
           'font-family':    "'Inter', 'Segoe UI', sans-serif",
-          'font-size':      '15px',
+          'font-size':      '14px',
           'color':          '#111827',
-          'padding':        '0 14px',
+          'padding':        '0 10px',
           'background':     'transparent',
           'border':         '0px none transparent',
           'border-style':   'none',
@@ -322,8 +396,8 @@ const CheckoutPage = () => {
           'outline':        'none',
           'box-shadow':     'none',
           'width':          '100%',
-          'height':         '46px',
-          'line-height':    '46px',
+          'height':         '38px',
+          'line-height':    '38px',
           'box-sizing':     'border-box',
         },
         invalidCss: {
@@ -436,6 +510,26 @@ const CheckoutPage = () => {
             qty:      Number(item.quantity || 1),
             quantity: Number(item.quantity || 1),
           })),
+          shippingAddress: {
+            fullName: shippingAddress.fullName,
+            address1: shippingAddress.address1,
+            address2: shippingAddress.address2,
+            city:     shippingAddress.city,
+            state:    shippingAddress.state,
+            zip:      shippingAddress.zip,
+            country:  shippingAddress.country || 'US',
+            phone:    shippingAddress.phone,
+          },
+          billingAddress: {
+            firstName: shippingAddress.fullName?.trim().split(/\s+/)[0] || '',
+            lastName:  shippingAddress.fullName?.trim().split(/\s+/).slice(1).join(' ') || '',
+            address1:  shippingAddress.address1,
+            address2:  shippingAddress.address2,
+            city:      shippingAddress.city,
+            state:     shippingAddress.state,
+            zip:       shippingAddress.zip,
+            country:   shippingAddress.country || 'US',
+          },
         }),
       });
 
@@ -500,10 +594,10 @@ const CheckoutPage = () => {
           <p className="text-gray-500 mt-1 text-sm">Review your items and complete payment securely.</p>
         </div>
 
-        <div className="flex flex-col lg:flex-row gap-8">
+        <div className="flex flex-col lg:flex-row gap-8 items-start">
 
           {/* ── LEFT: Order items ── */}
-          <div className="flex-1">
+          <div className="w-full flex-1 lg:sticky lg:top-[190px]">
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
               <div className="px-6 py-4 border-b border-gray-100 bg-gray-50">
                 <h2 className="font-semibold text-gray-800 text-lg">
@@ -567,101 +661,6 @@ const CheckoutPage = () => {
               )}
             </div>
 
-            {/* Shipping Address Card */}
-            {cartItems.length > 0 && (
-              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mt-6 p-6">
-                <h2 className="font-semibold text-gray-800 text-base mb-4 flex items-center gap-2">
-                  Shipping & Billing Address
-                </h2>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="md:col-span-2">
-                    <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">
-                      Full Name *
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="John Doe"
-                      value={shippingAddress.fullName}
-                      onChange={(e) => setShippingAddress({ ...shippingAddress, fullName: e.target.value })}
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:border-yellow-500 transition-colors"
-                      required
-                    />
-                  </div>
-                  <div className="md:col-span-2">
-                    <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">
-                      Street Address *
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="123 Main St"
-                      value={shippingAddress.address1}
-                      onChange={(e) => setShippingAddress({ ...shippingAddress, address1: e.target.value })}
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:border-yellow-500 transition-colors mb-2"
-                      required
-                    />
-                    <input
-                      type="text"
-                      placeholder="Apt, Suite, Unit (optional)"
-                      value={shippingAddress.address2}
-                      onChange={(e) => setShippingAddress({ ...shippingAddress, address2: e.target.value })}
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:border-yellow-500 transition-colors"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">
-                      City *
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="New York"
-                      value={shippingAddress.city}
-                      onChange={(e) => setShippingAddress({ ...shippingAddress, city: e.target.value })}
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:border-yellow-500 transition-colors"
-                      required
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">
-                      State / Province *
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="NY"
-                      value={shippingAddress.state}
-                      onChange={(e) => setShippingAddress({ ...shippingAddress, state: e.target.value })}
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:border-yellow-500 transition-colors"
-                      required
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">
-                      Zip / Postal Code *
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="10001"
-                      value={shippingAddress.zip}
-                      onChange={(e) => setShippingAddress({ ...shippingAddress, zip: e.target.value })}
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:border-yellow-500 transition-colors"
-                      required
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">
-                      Phone Number
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="+1 (555) 000-0000"
-                      value={shippingAddress.phone}
-                      onChange={(e) => setShippingAddress({ ...shippingAddress, phone: e.target.value })}
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:border-yellow-500 transition-colors"
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-
             {/* Trust badges */}
             <div className="mt-5 flex flex-wrap items-center gap-4 text-xs text-gray-400">
               <span className="flex items-center gap-1.5">
@@ -676,10 +675,10 @@ const CheckoutPage = () => {
             </div>
           </div>
 
-          {/* ── RIGHT: Payment panel ── */}
+          {/* ── RIGHT: Combined Summary, Address & Payment panel ── */}
           {cartItems.length > 0 && (
-            <div className="w-full lg:w-96">
-              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden sticky top-8">
+            <div className="w-full lg:w-[440px] lg:sticky lg:top-[190px]">
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden space-y-0">
 
                 {/* Order summary */}
                 <div className="px-6 py-5 border-b border-gray-100 bg-gray-50">
@@ -691,12 +690,113 @@ const CheckoutPage = () => {
                     </div>
                     <div className="flex justify-between text-gray-500">
                       <span>Shipping</span>
-                      <span className="text-green-600 font-medium">Calculated at checkout</span>
+                      <span className="text-gray-800 font-medium">
+                        {shippingLoading ? (
+                          <span className="text-yellow-600 animate-pulse text-xs font-semibold">Calculating rate...</span>
+                        ) : shippingCost > 0 ? (
+                          <span>${shippingCost.toFixed(2)} <span className="text-xs text-gray-400 font-normal">({shippingServiceName || 'Standard'})</span></span>
+                        ) : (
+                          <span className="text-gray-400 text-xs">Enter address to calculate</span>
+                        )}
+                      </span>
                     </div>
                   </div>
                   <div className="border-t border-gray-200 mt-4 pt-4 flex justify-between items-center">
                     <span className="font-bold text-gray-900 text-base">Total</span>
-                    <span className="font-extrabold text-gray-900 text-xl">${subtotal.toFixed(2)}</span>
+                    <span className="font-extrabold text-gray-900 text-xl">${finalTotal.toFixed(2)}</span>
+                  </div>
+                </div>
+
+                {/* Shipping & Billing Address Section */}
+                <div className="p-6 border-b border-gray-100">
+                  <h2 className="font-bold text-gray-800 text-base mb-4 flex items-center gap-2 uppercase tracking-wide">
+                    Shipping &amp; Billing Address
+                  </h2>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="md:col-span-2">
+                      <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">
+                        Full Name *
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="John Doe"
+                        value={shippingAddress.fullName}
+                        onChange={(e) => setShippingAddress({ ...shippingAddress, fullName: e.target.value })}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:border-yellow-500 transition-colors"
+                        required
+                      />
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">
+                        Street Address *
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="123 Main St"
+                        value={shippingAddress.address1}
+                        onChange={(e) => setShippingAddress({ ...shippingAddress, address1: e.target.value })}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:border-yellow-500 transition-colors mb-2"
+                        required
+                      />
+                      <input
+                        type="text"
+                        placeholder="Apt, Suite, Unit (optional)"
+                        value={shippingAddress.address2}
+                        onChange={(e) => setShippingAddress({ ...shippingAddress, address2: e.target.value })}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:border-yellow-500 transition-colors"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">
+                        City *
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="New York"
+                        value={shippingAddress.city}
+                        onChange={(e) => setShippingAddress({ ...shippingAddress, city: e.target.value })}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:border-yellow-500 transition-colors"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">
+                        State / Province *
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="NY"
+                        value={shippingAddress.state}
+                        onChange={(e) => setShippingAddress({ ...shippingAddress, state: e.target.value })}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:border-yellow-500 transition-colors"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">
+                        Zip / Postal Code *
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="10001"
+                        value={shippingAddress.zip}
+                        onChange={(e) => setShippingAddress({ ...shippingAddress, zip: e.target.value })}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:border-yellow-500 transition-colors"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">
+                        Phone Number
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="+1 (555) 000-0000"
+                        value={shippingAddress.phone}
+                        onChange={(e) => setShippingAddress({ ...shippingAddress, phone: e.target.value })}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:border-yellow-500 transition-colors"
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -737,64 +837,78 @@ const CheckoutPage = () => {
                   ) : (
                     /* ── DIME / NMI ── */
                     <form id="dime-payment-form" onSubmit={handleDimeSubmit}>
-                      <h3 className="font-semibold text-gray-800 text-sm mb-5 flex items-center gap-2">
-                        <CreditCard size={16} className="text-[#f9c821]" /> Enter Card Details
-                      </h3>
+                      {/* Title & Card Icons inline */}
+                      <div className="flex items-center gap-2 mb-3">
+                        <h3 className="font-bold text-gray-900 text-sm tracking-wide">
+                          Credit card
+                        </h3>
+                        <div className="flex items-center gap-1">
+                          <img src="https://img.icons8.com/color/32/visa.png" alt="Visa" className="h-5 opacity-90" />
+                          <img src="https://img.icons8.com/color/32/mastercard.png" alt="Mastercard" className="h-5 opacity-90" />
+                          <img src="https://img.icons8.com/color/32/amex.png" alt="Amex" className="h-5 opacity-90" />
+                          <img src="https://img.icons8.com/color/32/discover.png" alt="Discover" className="h-5 opacity-90" />
+                        </div>
+                      </div>
 
                       {/* Error alert */}
                       {dimeError && (
-                        <div className="flex items-start gap-2 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm mb-4">
+                        <div className="flex items-start gap-2 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-xs mb-4">
                           <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
                           <span>{dimeError}</span>
                         </div>
                       )}
 
-                      {/* Loading overlay while CollectJS loads */}
-                      {!collectJsReady && (
-                        <div className="flex items-center gap-2 text-gray-400 text-xs mb-4">
-                          <Loader2 size={14} className="animate-spin" />
-                          Securing payment fields…
-                        </div>
-                      )}
+                      {/* Shaded Inner Card Box */}
+                      <div className="bg-[#e9e8f0]/70 p-4 sm:p-5 rounded-2xl border border-gray-200/80 mb-5">
+                        <p className="text-xs text-gray-500 mb-4 font-medium">
+                          Pay with your credit card
+                        </p>
 
-                      {/* Card Number */}
-                      <div className="mb-4">
-                        <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">
-                          Card Number
-                        </label>
-                        <div
-                          id="collect-ccnumber"
-                          className="w-full rounded-xl overflow-hidden transition-all bg-white"
-                          style={{
-                            height: '46px',
-                            boxShadow: dimeError
-                              ? '0 0 0 2px #fca5a5'
-                              : '0 0 0 1.5px #e5e7eb',
-                          }}
-                        />
-                      </div>
+                        {/* Loading overlay while CollectJS loads */}
+                        {!collectJsReady && (
+                          <div className="flex items-center gap-2 text-gray-400 text-xs mb-4">
+                            <Loader2 size={14} className="animate-spin" />
+                            Securing payment fields…
+                          </div>
+                        )}
 
-                      {/* Expiry + CVV row */}
-                      <div className="grid grid-cols-2 gap-3 mb-5">
-                        <div>
-                          <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">
-                            Expiry
+                        {/* Card Number */}
+                        <div className="mb-4">
+                          <label className="block text-xs font-semibold text-gray-700 mb-1">
+                            Card Number <span className="text-red-600">*</span>
                           </label>
                           <div
-                            id="collect-ccexp"
-                            className="w-full rounded-xl overflow-hidden transition-all bg-white"
-                            style={{ height: '46px', boxShadow: '0 0 0 1.5px #e5e7eb' }}
+                            id="collect-ccnumber"
+                            className="w-full rounded bg-white transition-all border border-gray-300 focus-within:border-black focus-within:ring-1 focus-within:ring-black shadow-sm"
+                            style={{
+                              height: '38px',
+                              boxShadow: dimeError ? '0 0 0 2px #fca5a5' : 'none',
+                            }}
                           />
                         </div>
-                        <div>
-                          <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">
-                            CVV
-                          </label>
-                          <div
-                            id="collect-cvv"
-                            className="w-full rounded-xl overflow-hidden transition-all bg-white"
-                            style={{ height: '46px', boxShadow: '0 0 0 1.5px #e5e7eb' }}
-                          />
+
+                        {/* Expiry + CVV row */}
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-xs font-semibold text-gray-700 mb-1">
+                              Expiry Date <span className="text-red-600">*</span>
+                            </label>
+                            <div
+                              id="collect-ccexp"
+                              className="w-full rounded bg-white transition-all border border-gray-300 focus-within:border-black focus-within:ring-1 focus-within:ring-black shadow-sm"
+                              style={{ height: '38px' }}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-gray-700 mb-1">
+                              Card Code (CVC) <span className="text-red-600">*</span>
+                            </label>
+                            <div
+                              id="collect-cvv"
+                              className="w-full rounded bg-white transition-all border border-gray-300 focus-within:border-black focus-within:ring-1 focus-within:ring-black shadow-sm"
+                              style={{ height: '38px' }}
+                            />
+                          </div>
                         </div>
                       </div>
 
@@ -820,14 +934,6 @@ const CheckoutPage = () => {
                           </>
                         )}
                       </button>
-
-                      {/* Card icons */}
-                      <div className="flex items-center justify-center gap-2 mt-4">
-                        <img src="https://img.icons8.com/color/32/visa.png" alt="Visa" className="h-6 opacity-70" />
-                        <img src="https://img.icons8.com/color/32/mastercard.png" alt="Mastercard" className="h-6 opacity-70" />
-                        <img src="https://img.icons8.com/color/32/amex.png" alt="Amex" className="h-6 opacity-70" />
-                        <img src="https://img.icons8.com/color/32/discover.png" alt="Discover" className="h-6 opacity-70" />
-                      </div>
 
                       <p className="text-center text-xs text-gray-400 mt-3 flex items-center justify-center gap-1">
                         <ShieldCheck size={13} className="text-green-500" />
