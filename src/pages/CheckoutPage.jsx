@@ -93,50 +93,7 @@ const CheckoutPage = () => {
     loadProfile();
   }, []);
 
-  /* ── MutationObserver: remove iframe borders the instant CollectJS injects them ── */
-  useEffect(() => {
-    if (!collectJsReady) return;
 
-    const FIELD_IDS = ['collect-ccnumber', 'collect-ccexp', 'collect-cvv'];
-    const FIELD_HEIGHT = '38px';
-
-    const applyStyle = (iframe) => {
-      iframe.style.setProperty('border',     'none', 'important');
-      iframe.style.setProperty('outline',    'none', 'important');
-      iframe.style.setProperty('box-shadow', 'none', 'important');
-      iframe.style.setProperty('background', 'transparent', 'important');
-      iframe.style.setProperty('width',      '100%', 'important');
-      iframe.style.setProperty('height',     FIELD_HEIGHT, 'important');
-      iframe.style.setProperty('display',    'block', 'important');
-      iframe.style.setProperty('vertical-align', 'middle', 'important');
-      iframe.setAttribute('frameBorder', '0');
-      iframe.setAttribute('scrolling', 'no');
-    };
-
-    // Run once immediately on all existing iframes
-    FIELD_IDS.forEach((id) => {
-      document.getElementById(id)
-        ?.querySelectorAll('iframe')
-        .forEach(applyStyle);
-    });
-
-    // Watch for new iframes being added (CollectJS is async)
-    const observer = new MutationObserver((mutations) => {
-      mutations.forEach((m) => {
-        m.addedNodes.forEach((node) => {
-          if (node.tagName === 'IFRAME') applyStyle(node);
-          node.querySelectorAll?.('iframe').forEach(applyStyle);
-        });
-      });
-    });
-
-    FIELD_IDS.forEach((id) => {
-      const el = document.getElementById(id);
-      if (el) observer.observe(el, { childList: true, subtree: true });
-    });
-
-    return () => observer.disconnect();
-  }, [collectJsReady]);
 
   /* ── Helpers ─────────────────────────────────────────────── */
   const getPriceAsNumber = (price) => {
@@ -314,54 +271,8 @@ const CheckoutPage = () => {
     script.onload = () => {
       if (!window.CollectJS) return;
 
-      const FIELD_IDS = ['collect-ccnumber', 'collect-ccexp', 'collect-cvv'];
-
-      // ── Helper: nuke every iframe border ──────────────────
-      const nukeIframe = (iframe) => {
-        const clear = () => {
-          iframe.style.setProperty('border',         '0',           'important');
-          iframe.style.setProperty('border-width',   '0',           'important');
-          iframe.style.setProperty('border-style',   'none',        'important');
-          iframe.style.setProperty('outline',        'none',        'important');
-          iframe.style.setProperty('box-shadow',     'none',        'important');
-          iframe.style.setProperty('background',     'transparent', 'important');
-          iframe.style.setProperty('width',          '100%',        'important');
-          iframe.style.setProperty('height',         '100%',        'important');
-          iframe.style.setProperty('display',        'block',       'important');
-          iframe.style.setProperty('vertical-align', 'middle',      'important');
-          iframe.removeAttribute('frameBorder');
-          iframe.setAttribute('frameborder', '0');
-        };
-        clear();
-        // Re-apply on every focus (browser re-adds outline on focus)
-        iframe.addEventListener('focus', clear);
-        iframe.addEventListener('focusin', clear);
-      };
-
-      const nukeAll = () => {
-        FIELD_IDS.forEach(id =>
-          document.getElementById(id)?.querySelectorAll('iframe').forEach(nukeIframe)
-        );
-      };
-
-      // ── Step 1: Watch BEFORE configure (catches iframes on inject) ──
-      const observer = new MutationObserver((mutations) => {
-        mutations.forEach(m =>
-          m.addedNodes.forEach(node => {
-            if (node.nodeName === 'IFRAME') nukeIframe(node);
-            node.querySelectorAll?.('iframe').forEach(nukeIframe);
-          })
-        );
-      });
-      FIELD_IDS.forEach(id => {
-        const el = document.getElementById(id);
-        if (el) observer.observe(el, { childList: true, subtree: true });
-      });
-
-      // ── Step 2: Configure CollectJS ──────────────────────────────
       window.CollectJS.configure({
         variant: 'inline',
-        styleSniffer: false,
         validationCallback: (field, status, message) => {
           if (!status) {
             setProcessing(false);
@@ -379,63 +290,36 @@ const CheckoutPage = () => {
           }
         },
         fields: {
-          ccnumber: { selector: '#collect-ccnumber', placeholder: '•••• •••• •••• ••••' },
+          ccnumber: { selector: '#collect-ccnumber', placeholder: 'Card Number' },
           ccexp:    { selector: '#collect-ccexp',    placeholder: 'MM / YY' },
           cvv:      { selector: '#collect-cvv',      placeholder: 'CVC' },
         },
         customCss: {
-          'font-family':    "'Inter', 'Segoe UI', sans-serif",
-          'font-size':      '14px',
-          'color':          '#111827',
-          'padding':        '0 10px',
-          'background':     'transparent',
-          'border':         '0px none transparent',
-          'border-style':   'none',
-          'border-width':   '0px',
-          'border-color':   'transparent',
-          'outline':        'none',
-          'box-shadow':     'none',
-          'width':          '100%',
-          'height':         '38px',
-          'line-height':    '38px',
-          'box-sizing':     'border-box',
-        },
-        invalidCss: {
-          'color':          '#dc2626',
-          'border':         '0px none transparent',
-          'border-style':   'none',
-          'border-width':   '0px',
-          'outline':        'none',
-          'box-shadow':     'none',
-        },
-        validCss: {
-          'color':          '#059669',
-          'border':         '0px none transparent',
-          'border-style':   'none',
-          'border-width':   '0px',
-          'outline':        'none',
-          'box-shadow':     'none',
-        },
-        placeholderCss: {
-          'color':          '#9ca3af',
-          'font-size':      '14px',
+          'color':            '#111827',
+          'background-color': '#ffffff',
+          'border':           '1px solid #d1d5db',
+          'border-radius':    '6px',
+          'font-family':      "'Inter', system-ui, -apple-system, sans-serif",
+          'font-size':        '14px',
+          'padding':          '0 12px',
+          'width':            '100%',
+          'height':           '40px',
+          'line-height':      '40px',
+          'box-sizing':       'border-box',
         },
         focusCss: {
-          'color':          '#111827',
-          'border':         '0px none transparent',
-          'border-style':   'none',
-          'border-width':   '0px',
-          'border-color':   'transparent',
-          'outline':        'none',
-          'box-shadow':     'none',
-          'background':     'transparent',
+          'border':           '1px solid #111827',
+          'outline':          'none',
+        },
+        invalidCss: {
+          'color':            '#ef4444',
+          'border':           '1px solid #ef4444',
+        },
+        placeholderCss: {
+          'color':            '#9ca3af',
+          'font-size':        '14px',
         },
       });
-
-      // ── Step 3: Sweep again after configure (safety net) ────────
-      nukeAll();
-      setTimeout(nukeAll, 150);
-      setTimeout(nukeAll, 600);
 
       setCollectJsReady(true);
     };
@@ -877,14 +761,7 @@ const CheckoutPage = () => {
                           <label className="block text-xs font-semibold text-gray-700 mb-1">
                             Card Number <span className="text-red-600">*</span>
                           </label>
-                          <div
-                            id="collect-ccnumber"
-                            className="w-full rounded bg-white transition-all border border-gray-300 focus-within:border-black focus-within:ring-1 focus-within:ring-black shadow-sm"
-                            style={{
-                              height: '38px',
-                              boxShadow: dimeError ? '0 0 0 2px #fca5a5' : 'none',
-                            }}
-                          />
+                          <div id="collect-ccnumber" className="w-full" style={{ height: '40px' }} />
                         </div>
 
                         {/* Expiry + CVV row */}
@@ -893,21 +770,13 @@ const CheckoutPage = () => {
                             <label className="block text-xs font-semibold text-gray-700 mb-1">
                               Expiry Date <span className="text-red-600">*</span>
                             </label>
-                            <div
-                              id="collect-ccexp"
-                              className="w-full rounded bg-white transition-all border border-gray-300 focus-within:border-black focus-within:ring-1 focus-within:ring-black shadow-sm"
-                              style={{ height: '38px' }}
-                            />
+                            <div id="collect-ccexp" className="w-full" style={{ height: '40px' }} />
                           </div>
                           <div>
                             <label className="block text-xs font-semibold text-gray-700 mb-1">
                               Card Code (CVC) <span className="text-red-600">*</span>
                             </label>
-                            <div
-                              id="collect-cvv"
-                              className="w-full rounded bg-white transition-all border border-gray-300 focus-within:border-black focus-within:ring-1 focus-within:ring-black shadow-sm"
-                              style={{ height: '38px' }}
-                            />
+                            <div id="collect-cvv" className="w-full" style={{ height: '40px' }} />
                           </div>
                         </div>
                       </div>
